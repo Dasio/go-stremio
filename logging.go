@@ -1,75 +1,100 @@
 package stremio
 
 import (
-	"errors"
-	"fmt"
-
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
+	"log/slog"
+	"net/http"
+	"os"
+	"time"
 )
 
-// NewLogger creates a new logger with sane defaults and the passed level.
-// Supported levels are: debug, info, warn, error.
-// Only logs with that level and above are then logged (e.g. with "info" no debug logs will be logged).
-// The encoding parameter is optional and will only be used when non-zero. Valid values: "console" (default) and "json".
-//
-// It makes sense to get this logger as early as possible and use it in your
-// ManifestCallback, CatalogHandler and StreamHandler,
-// so that all logs behave and are formatted the same way.
-// You should then also set this logger in the options for `NewAddon()`,
-// so that not two loggers are created.
-// Alternatively you can create your own custom *zap.Logger and set it in the options
-// when creating a new addon, leading to the addon using that custom logger.
-func NewLogger(level, encoding string) (*zap.Logger, error) {
-	logLevel, err := parseZapLevel(level)
-	if err != nil {
-		return nil, fmt.Errorf("Couldn't parse log level: %w", err)
-	}
-	logConfig := zap.NewDevelopmentConfig()
-	logConfig.Level = zap.NewAtomicLevelAt(logLevel)
-	// Deactivate stacktraces for warn level.
-	logConfig.Development = false
-	// Mix between zap's development and production EncoderConfig and other changes.
-	logConfig.EncoderConfig = zapcore.EncoderConfig{
-		TimeKey:        "ts",
-		LevelKey:       "level",
-		NameKey:        "logger",
-		CallerKey:      "caller",
-		MessageKey:     "msg",
-		StacktraceKey:  "stacktrace",
-		LineEnding:     zapcore.DefaultLineEnding,
-		EncodeLevel:    zapcore.CapitalLevelEncoder,
-		EncodeTime:     zapcore.RFC3339TimeEncoder,
-		EncodeDuration: zapcore.StringDurationEncoder,
-		EncodeCaller:   nil,
-	}
-	if encoding != "" {
-		logConfig.Encoding = encoding
-	}
-	// "console" encoding works without caller encoder, but "json" doesn't.
-	// For "console" we prefer to have a more succinct log line without the caller (as configured above),
-	// but for "json" (and potentially others in the future) we need to set it.
-	if logConfig.Encoding != "console" {
-		logConfig.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
-	}
-	logger, err := logConfig.Build()
-	if err != nil {
-		return nil, fmt.Errorf("Couldn't create logger: %w", err)
+// NewLogger creates a new logger with the specified level and encoding.
+// The level can be "debug", "info", "warn", or "error".
+// The encoding can be "json" or "console".
+func NewLogger(level string, encoding string) *slog.Logger {
+	var logLevel slog.Level
+	switch level {
+	case "debug":
+		logLevel = slog.LevelDebug
+	case "info":
+		logLevel = slog.LevelInfo
+	case "warn":
+		logLevel = slog.LevelWarn
+	case "error":
+		logLevel = slog.LevelError
+	default:
+		logLevel = slog.LevelInfo
 	}
 
-	return logger, nil
+	var handler slog.Handler
+	if encoding == "json" {
+		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+			Level: logLevel,
+		})
+	} else {
+		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: logLevel,
+		})
+	}
+
+	return slog.New(handler)
 }
 
-func parseZapLevel(logLevel string) (zapcore.Level, error) {
-	switch logLevel {
-	case "debug":
-		return zapcore.DebugLevel, nil
-	case "info":
-		return zapcore.InfoLevel, nil
-	case "warn":
-		return zapcore.WarnLevel, nil
-	case "error":
-		return zapcore.ErrorLevel, nil
+// createLoggingMiddleware creates a middleware that logs requests.
+func createLoggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+
+			// Create request-specific fields
+			attrs := []any{
+				"method", r.Method,
+				"path", r.URL.Path,
+				"remote_addr", r.RemoteAddr,
+				"user_agent", r.UserAgent(),
+			}
+
+			// Log request start
+			logger.Info("Request started", attrs...)
+
+			// Create response writer that captures status code
+			rw := &responseWriter{
+				ResponseWriter: w,
+				statusCode:     http.StatusOK,
+			}
+
+			// Handle request
+			next.ServeHTTP(rw, r)
+
+			// Calculate duration
+			duration := time.Since(start)
+
+			// Log request completion
+			attrs = append(attrs,
+				"status", rw.statusCode,
+				"duration", duration,
+			)
+			logger.Info("Request completed", attrs...)
+		})
 	}
-	return 0, errors.New(`unknown log level - only knows ["debug", "info", "warn", "error"]`)
+}
+
+// responseWriter is a wrapper around http.ResponseWriter that captures the status code.
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+// WriteHeader captures the status code before writing it.
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// createHealthHandler creates a handler for health check requests.
+func createHealthHandler(logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		logger.Debug("Health check request received")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	}
 }

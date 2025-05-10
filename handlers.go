@@ -2,262 +2,208 @@ package stremio
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"math"
+	"log/slog"
+	"net/http"
 	"net/url"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/cespare/xxhash/v2"
-	"github.com/gofiber/fiber/v2"
-	"go.uber.org/zap"
+	"github.com/Dasio/go-stremio/pkg/cinemeta"
 )
 
 type customEndpoint struct {
 	method  string
 	path    string
-	handler fiber.Handler
+	handler http.HandlerFunc
 }
 
-func createHealthHandler(logger *zap.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		logger.Debug("healthHandler called")
-		return c.SendString("OK")
-	}
-}
-
-func createManifestHandler(manifest Manifest, logger *zap.Logger, manifestCallback ManifestCallback, userDataType reflect.Type, userDataIsBase64 bool) fiber.Handler {
-	// When there's user data we want Stremio to show the "Install" button, which it only does when "configurationRequired" is false.
-	// To not change the boolean value of the manifest object on the fly and thus mess with a single object across concurrent goroutines, we copy it and return two different objects.
-	// Note that this manifest copy has some values shallowly copied, but `BehaviorHints.ConfigurationRequired` is a simple type and thus a real copy.
-	configuredManifest := manifest
-	configuredManifest.BehaviorHints.ConfigurationRequired = false
-
-	manifestBody, err := json.Marshal(manifest)
+// generateETag generates an ETag for the given data.
+func generateETag(data any) string {
+	jsonData, err := json.Marshal(data)
 	if err != nil {
-		logger.Fatal("Couldn't marshal manifest", zap.Error(err))
+		return ""
 	}
-	configuredManifestBody, err := json.Marshal(configuredManifest)
-	if err != nil {
-		logger.Fatal("Couldn't marshal configured manifest", zap.Error(err))
-	}
+	hash := sha256.Sum256(jsonData)
+	return hex.EncodeToString(hash[:])
+}
 
-	return func(c *fiber.Ctx) error {
-		logger.Debug("manifestHandler called")
-
-		// First call the callback so the SDK user can prevent further processing
-		var userData interface{}
-		userDataString := c.Params("userData")
-		configured := false
-		if userDataString == "" {
-			if userDataType == nil {
-				userData = ""
-			} else {
-				userData = nil
-			}
-		} else {
-			configured = true
-			if userDataType == nil {
-				userData = userDataString
-			} else {
-				var err error
-				if userData, err = decodeUserData(userDataString, userDataType, logger, userDataIsBase64); err != nil {
-					return c.SendStatus(fiber.StatusBadRequest)
-				}
-			}
-		}
-		if manifestCallback != nil {
-			manifestClone := manifest.clone()
-			if status := manifestCallback(c.Context(), &manifestClone, userData); status >= 400 {
-				return c.SendStatus(status)
-			}
-			// Similar to what we do before returning this handler func, we need to set `ConfigurationRequired` to false so that Stremio shows an install button at all
-			if configured {
-				manifestClone.BehaviorHints.ConfigurationRequired = false
-			}
-			// Probably no performance gain when checking deep equality of original vs cloned manifest to skip potentially unnecessary JSON encoding.
-			clonedManifestBody, err := json.Marshal(manifestClone)
-			if err != nil {
-				logger.Fatal("Couldn't marshal cloned manifest", zap.Error(err))
-			}
-			logger.Debug("Responding", zap.ByteString("body", clonedManifestBody))
-			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-			return c.Send(clonedManifestBody)
+// createManifestHandler creates a handler for manifest requests.
+func createManifestHandler(manifest Manifest, logger *slog.Logger, callback ManifestCallback, userDataType reflect.Type, userDataIsBase64 bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get user data from URL
+		userData := r.URL.Query().Get("userData")
+		if userData == "" {
+			userData = r.URL.Query().Get("userData")
 		}
 
-		if configured {
-			logger.Debug("Responding", zap.ByteString("body", configuredManifestBody))
-			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-			return c.Send(configuredManifestBody)
-		} else {
-			logger.Debug("Responding", zap.ByteString("body", manifestBody))
-			c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-			return c.Send(manifestBody)
-		}
-	}
-}
-
-func createCatalogHandler(catalogHandlers map[string]CatalogHandler, cacheAge time.Duration, cachePublic, handleEtag bool, logger *zap.Logger, userDataType reflect.Type, userDataIsBase64 bool) fiber.Handler {
-	handlers := make(map[string]handler, len(catalogHandlers))
-	for k, v := range catalogHandlers {
-		handlers[k] = convertCatalogHandler(v)
-	}
-	return createHandler("catalog", handlers, []byte("metas"), cacheAge, cachePublic, handleEtag, logger, userDataType, userDataIsBase64)
-}
-
-func createStreamHandler(streamHandlers map[string]StreamHandler, cacheAge time.Duration, cachePublic, handleEtag bool, logger *zap.Logger, userDataType reflect.Type, userDataIsBase64 bool) fiber.Handler {
-	handlers := make(map[string]handler, len(streamHandlers))
-	for k, v := range streamHandlers {
-		handlers[k] = convertStreamHandler(v)
-	}
-	return createHandler("stream", handlers, []byte("streams"), cacheAge, cachePublic, handleEtag, logger, userDataType, userDataIsBase64)
-}
-
-func convertCatalogHandler(h CatalogHandler) handler {
-	return func(ctx context.Context, id string, userData interface{}) (interface{}, error) {
-		return h(ctx, id, userData)
-	}
-}
-
-func convertStreamHandler(h StreamHandler) handler {
-	return func(ctx context.Context, id string, userData interface{}) (interface{}, error) {
-		return h(ctx, id, userData)
-	}
-}
-
-// Common handler (same signature as both catalog and stream handler)
-type handler func(ctx context.Context, id string, userData interface{}) (interface{}, error)
-
-func createHandler(handlerName string, handlers map[string]handler, jsonArrayKey []byte, cacheAge time.Duration, cachePublic, handleEtag bool, logger *zap.Logger, userDataType reflect.Type, userDataIsBase64 bool) fiber.Handler {
-	handlerName = handlerName + "Handler"
-	handlerLogMsg := handlerName + " called"
-
-	var cacheHeaderVal string
-	if cacheAge != 0 {
-		cacheAgeSeconds := strconv.FormatFloat(math.Round(cacheAge.Seconds()), 'f', 0, 64)
-		cacheHeaderVal = "max-age=" + cacheAgeSeconds
-		if cachePublic {
-			cacheHeaderVal += ", public"
-		} else {
-			cacheHeaderVal += ", private"
-		}
-	}
-
-	logger = logger.With(zap.String("handler", handlerName))
-
-	return func(c *fiber.Ctx) error {
-		logger.Debug(handlerLogMsg)
-
-		requestedType := c.Params("type")
-		requestedID := c.Params("id")
-		requestedID, err := url.PathUnescape(requestedID)
+		// Decode user data if needed
+		decodedUserData, err := decodeUserData(userData, userDataType, logger, userDataIsBase64)
 		if err != nil {
-			logger.Error("Requested ID couldn't be unescaped", zap.String("requestedID", requestedID))
-			return c.SendStatus(fiber.StatusBadRequest)
+			logger.Error("Failed to decode user data", "error", err)
+			http.Error(w, "Invalid user data", http.StatusBadRequest)
+			return
 		}
 
-		zapLogType, zapLogID := zap.String("requestedType", requestedType), zap.String("requestedID", requestedID)
+		// Call callback if set
+		if callback != nil {
+			status := callback(r.Context(), &manifest, decodedUserData)
+			if status >= 400 {
+				http.Error(w, "Manifest callback returned error", status)
+				return
+			}
+		}
 
-		// Check if we have a handler for the type
-		handler, ok := handlers[requestedType]
+		// Return manifest
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(manifest)
+	}
+}
+
+// createCatalogHandler creates a handler for catalog requests.
+func createCatalogHandler(handlers map[string]CatalogHandler, cacheAge int, cachePublic bool, handleEtag bool, logger *slog.Logger, userDataType reflect.Type, userDataIsBase64 bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get type and ID from URL
+		typeStr := r.URL.Query().Get("type")
+		id := r.URL.Query().Get("id")
+		if typeStr == "" || id == "" {
+			http.Error(w, "Missing type or id parameter", http.StatusBadRequest)
+			return
+		}
+
+		// Get user data from URL
+		userData := r.URL.Query().Get("userData")
+		if userData == "" {
+			userData = r.URL.Query().Get("userData")
+		}
+
+		// Decode user data if needed
+		decodedUserData, err := decodeUserData(userData, userDataType, logger, userDataIsBase64)
+		if err != nil {
+			logger.Error("Failed to decode user data", "error", err)
+			http.Error(w, "Invalid user data", http.StatusBadRequest)
+			return
+		}
+
+		// Get handler for type
+		handler, ok := handlers[typeStr]
 		if !ok {
-			logger.Warn("Got request for unhandled type; returning 404")
-			return c.SendStatus(fiber.StatusNotFound)
+			http.Error(w, "Unsupported type", http.StatusBadRequest)
+			return
 		}
 
-		// Decode user data
-		var userData interface{}
-		userDataString := c.Params("userData")
-		if userDataType == nil {
-			userData = userDataString
-		} else if userDataString == "" {
-			userData = nil
-		} else {
-			var err error
-			if userData, err = decodeUserData(userDataString, userDataType, logger, userDataIsBase64); err != nil {
-				return c.SendStatus(fiber.StatusBadRequest)
-			}
-		}
-
-		res, err := handler(c.Context(), requestedID, userData)
+		// Call handler
+		items, err := handler(r.Context(), id, decodedUserData)
 		if err != nil {
-			switch err {
-			case NotFound:
-				logger.Warn("Got request for unhandled media ID; returning 404")
-				return c.SendStatus(fiber.StatusNotFound)
-			case BadRequest:
-				logger.Warn("Got bad request; returning 400")
-				return c.SendStatus(fiber.StatusBadRequest)
-			default:
-				logger.Error("Addon returned error", zap.Error(err), zapLogType, zapLogID)
-				return c.SendStatus(fiber.StatusInternalServerError)
-			}
+			logger.Error("Catalog handler returned error", "error", err)
+			http.Error(w, "Failed to get catalog", http.StatusInternalServerError)
+			return
 		}
 
-		resBody, err := json.Marshal(res)
-		if err != nil {
-			logger.Error("Couldn't marshal response", zap.Error(err), zapLogType, zapLogID)
-			return c.SendStatus(fiber.StatusInternalServerError)
+		// Set cache headers
+		if cacheAge > 0 {
+			w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(cacheAge))
+		}
+		if cachePublic {
+			w.Header().Set("Cache-Control", "public")
 		}
 
 		// Handle ETag
-		var eTag string
 		if handleEtag {
-			hash := xxhash.Sum64(resBody)
-			eTag = strconv.FormatUint(hash, 16)
-			ifNoneMatch := c.Get("If-None-Match")
-			zapLogIfNoneMatch, zapLogETagServer := zap.String("If-None-Match", ifNoneMatch), zap.String("ETag", eTag)
-			modified := false
-			if ifNoneMatch == "*" {
-				logger.Debug("If-None-Match is \"*\", responding with 304", zapLogIfNoneMatch, zapLogETagServer, zapLogType, zapLogID)
-			} else if ifNoneMatch != eTag {
-				logger.Debug("If-None-Match != ETag", zapLogIfNoneMatch, zapLogETagServer, zapLogType, zapLogID)
-				modified = true
-			} else {
-				logger.Debug("ETag matches, responding with 304", zapLogIfNoneMatch, zapLogETagServer, zapLogType, zapLogID)
-			}
-			if !modified {
-				c.Set(fiber.HeaderCacheControl, cacheHeaderVal) // Required according to https://tools.ietf.org/html/rfc7232#section-4.1
-				c.Set(fiber.HeaderETag, eTag)                   // We set it to make sure a client doesn't overwrite its cached ETag with an empty string or so.
-				return c.SendStatus(fiber.StatusNotModified)
+			etag := generateETag(items)
+			w.Header().Set("ETag", etag)
+			if r.Header.Get("If-None-Match") == etag {
+				w.WriteHeader(http.StatusNotModified)
+				return
 			}
 		}
 
-		if len(jsonArrayKey) > 0 {
-			prefix := append([]byte(`{"`), jsonArrayKey...)
-			prefix = append(prefix, '"', ':')
-			resBody = append(prefix, resBody...)
-			resBody = append(resBody, '}')
-		}
-
-		logger.Debug("Responding", zap.ByteString("body", resBody), zapLogType, zapLogID)
-		c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-		if cacheHeaderVal != "" {
-			c.Set(fiber.HeaderCacheControl, cacheHeaderVal)
-			if handleEtag {
-				c.Set(fiber.HeaderETag, eTag)
-			}
-		}
-		return c.Send(resBody)
+		// Return items
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(items)
 	}
 }
 
-func createRootHandler(redirectURL string, logger *zap.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		logger.Debug("rootHandler called")
+// createStreamHandler creates a handler for stream requests.
+func createStreamHandler(handlers map[string]StreamHandler, cacheAge int, cachePublic bool, handleEtag bool, logger *slog.Logger, userDataType reflect.Type, userDataIsBase64 bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Get type and ID from URL
+		typeStr := r.URL.Query().Get("type")
+		id := r.URL.Query().Get("id")
+		if typeStr == "" || id == "" {
+			http.Error(w, "Missing type or id parameter", http.StatusBadRequest)
+			return
+		}
 
-		logger.Debug("Responding with redirect", zap.String("redirectURL", redirectURL))
-		c.Set(fiber.HeaderLocation, redirectURL)
-		return c.SendStatus(fiber.StatusMovedPermanently)
+		// Get user data from URL
+		userData := r.URL.Query().Get("userData")
+		if userData == "" {
+			userData = r.URL.Query().Get("userData")
+		}
+
+		// Decode user data if needed
+		decodedUserData, err := decodeUserData(userData, userDataType, logger, userDataIsBase64)
+		if err != nil {
+			logger.Error("Failed to decode user data", "error", err)
+			http.Error(w, "Invalid user data", http.StatusBadRequest)
+			return
+		}
+
+		// Get handler for type
+		handler, ok := handlers[typeStr]
+		if !ok {
+			http.Error(w, "Unsupported type", http.StatusBadRequest)
+			return
+		}
+
+		// Call handler
+		items, err := handler(r.Context(), id, decodedUserData)
+		if err != nil {
+			logger.Error("Stream handler returned error", "error", err)
+			http.Error(w, "Failed to get streams", http.StatusInternalServerError)
+			return
+		}
+
+		// Set cache headers
+		if cacheAge > 0 {
+			w.Header().Set("Cache-Control", "public, max-age="+strconv.Itoa(cacheAge))
+		}
+		if cachePublic {
+			w.Header().Set("Cache-Control", "public")
+		}
+
+		// Handle ETag
+		if handleEtag {
+			etag := generateETag(items)
+			w.Header().Set("ETag", etag)
+			if r.Header.Get("If-None-Match") == etag {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
+
+		// Return items
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(items)
 	}
 }
 
-func decodeUserData(data string, t reflect.Type, logger *zap.Logger, userDataIsBase64 bool) (interface{}, error) {
-	logger.Debug("Decoding user data", zap.String("userData", data))
+func createRootHandler(redirectURL string, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		logger.Info("rootHandler called")
+		logger.Info("Responding with redirect", "redirectURL", redirectURL)
+		http.Redirect(w, r, redirectURL, http.StatusMovedPermanently)
+	}
+}
+
+func decodeUserData(data string, t reflect.Type, logger *slog.Logger, userDataIsBase64 bool) (any, error) {
+	logger.Info("Decoding user data", "userData", data)
 
 	var userDataDecoded []byte
 	var err error
@@ -272,15 +218,106 @@ func decodeUserData(data string, t reflect.Type, logger *zap.Logger, userDataIsB
 	}
 	if err != nil {
 		// We use WARN instead of ERROR because it's most likely an *encoding* error on the client side
-		logger.Warn("Couldn't decode user data", zap.Error(err))
+		logger.Warn("Couldn't decode user data", "error", err)
 		return nil, err
 	}
 
 	userData := reflect.New(t).Interface()
 	if err := json.Unmarshal(userDataDecoded, userData); err != nil {
-		logger.Warn("Couldn't unmarshal user data", zap.Error(err))
+		logger.Warn("Couldn't unmarshal user data", "error", err)
 		return nil, err
 	}
-	logger.Debug("Decoded user data", zap.String("userData", fmt.Sprintf("%+v", userData)))
+	logger.Info("Decoded user data", "userData", fmt.Sprintf("%+v", userData))
 	return userData, nil
+}
+
+// createMetaMiddleware creates a middleware that fetches meta information for stream requests.
+func createMetaMiddleware(metaClient MetaFetcher, putMetaInContext bool, logMediaName bool, logger *slog.Logger) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Get type and ID from URL
+			typeStr := r.URL.Query().Get("type")
+			id := r.URL.Query().Get("id")
+			if typeStr == "" || id == "" {
+				http.Error(w, "Missing type or id parameter", http.StatusBadRequest)
+				return
+			}
+
+			// Get meta information
+			var meta cinemeta.Meta
+			var err error
+			if typeStr == "movie" {
+				meta, err = metaClient.GetMovie(r.Context(), id)
+			} else if typeStr == "series" {
+				// Get season and episode from URL
+				season := r.URL.Query().Get("season")
+				episode := r.URL.Query().Get("episode")
+				if season == "" || episode == "" {
+					http.Error(w, "Missing season or episode parameter", http.StatusBadRequest)
+					return
+				}
+				seasonNum, err := strconv.Atoi(season)
+				if err != nil {
+					http.Error(w, "Invalid season parameter", http.StatusBadRequest)
+					return
+				}
+				episodeNum, err := strconv.Atoi(episode)
+				if err != nil {
+					http.Error(w, "Invalid episode parameter", http.StatusBadRequest)
+					return
+				}
+				meta, err = metaClient.GetTVShow(r.Context(), id, seasonNum, episodeNum)
+			} else {
+				http.Error(w, "Unsupported type", http.StatusBadRequest)
+				return
+			}
+
+			if err != nil {
+				logger.Error("Failed to get meta information", "error", err)
+				http.Error(w, "Failed to get meta information", http.StatusInternalServerError)
+				return
+			}
+
+			// Log media name if enabled
+			if logMediaName {
+				logger.Info("Media name", "name", meta.Name)
+			}
+
+			// Put meta in context if enabled
+			if putMetaInContext {
+				ctx := context.WithValue(r.Context(), "meta", meta)
+				r = r.WithContext(ctx)
+			}
+
+			// Call next handler
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// addRouteMatcherMiddleware adds a middleware that matches routes and puts request info in the context.
+func addRouteMatcherMiddleware(mux *http.ServeMux, configurationRequired bool, streamIDregex *regexp.Regexp, logger *slog.Logger) {
+	// Add middleware to all routes
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Check if configuration is required
+		if configurationRequired {
+			userData := r.URL.Query().Get("userData")
+			if userData == "" {
+				http.Error(w, "Configuration required", http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Check if stream ID matches regex
+		if streamIDregex != nil {
+			id := r.URL.Query().Get("id")
+			if id != "" && !streamIDregex.MatchString(id) {
+				http.Error(w, "Invalid stream ID", http.StatusBadRequest)
+				return
+			}
+		}
+
+		// Call next handler
+		mux.ServeHTTP(w, r)
+	})
 }

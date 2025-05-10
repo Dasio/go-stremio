@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 
-	"github.com/deflix-tv/go-stremio"
+	"github.com/Dasio/go-stremio"
 )
 
 var (
@@ -26,7 +26,7 @@ var (
 	}
 )
 
-func streamHandler(_ context.Context, id string, _ interface{}) ([]stremio.StreamItem, error) {
+func streamHandler(_ context.Context, id string, _ any) ([]stremio.StreamItem, error) {
 	if id == "tt1254207" {
 		return []stremio.StreamItem{{URL: "http://distribution.bbb3d.renderfarming.net/video/mp4/bbb_sunflower_1080p_30fps_normal.mp4"}}, nil
 	}

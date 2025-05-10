@@ -6,7 +6,6 @@ This example is a more complex example showing some advanced features of go-stre
   - The user data type is registered so that go-stremio passes an object of the struct to the handler and no additional decoding or JSON unmarshalling is required
 - It uses a custom "auth" middleware to block unauthorized requests to selected endpoints
   - This showcases how user data can be used when go-stremio doesn't pass an already decoded and unmarshalled object to the method
-  - This showcases how to use the `fiber.Ctx` object in a custom middleware
 - It contains a `web` directory with an `index.html` file which is served when visiting the `/configure` endpoint in a browser.
   - The page allows a user to 1. enter their credentials and 2. select their favorite stream type (torrent or HTTP)
 - It uses a custom middleware for the `/stream` endpoint which logs the movie name a user is asking for
@@ -17,7 +16,7 @@ This example is a more complex example showing some advanced features of go-stre
 
 ## Run
 
-1. `git clone https://github.com/Deflix-tv/go-stremio.git`
+1. `git clone https://github.com/Dasio/go-stremio.git`
 2. `cd ./go-stremio/examples/advanced`
 3. `go run .`
 

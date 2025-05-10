@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/deflix-tv/go-stremio"
+	"github.com/Dasio/go-stremio"
 )
 
 var (
@@ -50,7 +50,7 @@ func main() {
 	addon.Run(nil)
 }
 
-func movieHandler(ctx context.Context, id string, userData interface{}) ([]stremio.StreamItem, error) {
+func movieHandler(ctx context.Context, id string, userData any) ([]stremio.StreamItem, error) {
 	// We only serve Big Buck Bunny and Sintel
 	if id == "tt1254207" {
 		return []stremio.StreamItem{

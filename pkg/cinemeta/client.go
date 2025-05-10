@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
+	"log/slog"
 	"net/http"
 	"time"
-
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 )
 
 // ClientOptions are the options for the Cinemeta client.
@@ -40,12 +38,12 @@ type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	cache      Cache
-	logger     *zap.Logger
+	logger     *slog.Logger
 	ttl        time.Duration
 }
 
 // NewClient creates a new Cinemeta client.
-func NewClient(opts ClientOptions, cache Cache, logger *zap.Logger) *Client {
+func NewClient(opts ClientOptions, cache Cache, logger *slog.Logger) *Client {
 	// Set defaults if necessary.
 	// A TTL of 0 is allowed.
 	if opts.BaseURL == "" {
@@ -93,23 +91,23 @@ func (c *Client) GetTVShow(ctx context.Context, imdbID string, season int, episo
 // than the HTTP client's configured timeout then it takes precedence.
 // If no timeout is set in the context, the HTTP client's timeout takes effect.
 func (c *Client) getMeta(ctx context.Context, t mediaType, imdbID string, season int, episode int) (Meta, error) {
-	var zapFieldIMDbID zapcore.Field
+	var logIMDbID string
 	switch t {
 	case movie:
-		zapFieldIMDbID = zap.String("imdbID", imdbID)
+		logIMDbID = imdbID
 	case tvShow:
-		zapFieldIMDbID = zap.String("imdbID", fmt.Sprintf("%v:%v:%v", imdbID, season, episode))
+		logIMDbID = fmt.Sprintf("%v:%v:%v", imdbID, season, episode)
 	}
 
 	// Check cache first
 	meta, created, found, err := c.cache.Get(imdbID)
 	if err != nil {
-		c.logger.Error("Couldn't decode meta", zap.Error(err), zapFieldIMDbID)
+		c.logger.Error("Couldn't decode meta", "error", err, "imdbID", logIMDbID)
 	} else if !found {
-		c.logger.Debug("Meta not found in cache", zapFieldIMDbID)
+		c.logger.Debug("Meta not found in cache", "imdbID", logIMDbID)
 	} else if time.Since(created) > c.ttl {
 		expiredSince := time.Since(created.Add(c.ttl))
-		c.logger.Debug("Hit cache for meta, but item is expired", zap.Duration("expiredSince", expiredSince), zapFieldIMDbID)
+		c.logger.Debug("Hit cache for meta, but item is expired", "expiredSince", expiredSince, "imdbID", logIMDbID)
 	} else {
 		c.logger.Debug("Hit cache for meta, returning result")
 		return meta, nil
@@ -136,7 +134,7 @@ func (c *Client) getMeta(ctx context.Context, t mediaType, imdbID string, season
 	if res.StatusCode != http.StatusOK {
 		return Meta{}, fmt.Errorf("Bad GET response: %v", res.StatusCode)
 	}
-	resBody, err := ioutil.ReadAll(res.Body)
+	resBody, err := io.ReadAll(res.Body)
 	if err != nil {
 		return Meta{}, fmt.Errorf("Couldn't read response body: %v", err)
 	}
@@ -150,7 +148,7 @@ func (c *Client) getMeta(ctx context.Context, t mediaType, imdbID string, season
 
 	// Fill cache
 	if err = c.cache.Set(imdbID, cineRes.Meta); err != nil {
-		c.logger.Error("Couldn't cache meta", zap.Error(err), zap.String("meta", fmt.Sprintf("%+v", cineRes.Meta)), zapFieldIMDbID)
+		c.logger.Error("Couldn't cache meta", "error", err, "meta", fmt.Sprintf("%+v", cineRes.Meta), "imdbID", logIMDbID)
 	}
 
 	return cineRes.Meta, nil

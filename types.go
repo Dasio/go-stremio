@@ -204,26 +204,35 @@ type MetaItem struct {
 	Name string `json:"name"`
 
 	// Optional
-	Genres      []string       `json:"genres,omitempty"`   // Will be replaced by Links at some point
-	Director    []string       `json:"director,omitempty"` // Will be replaced by Links at some point
-	Cast        []string       `json:"cast,omitempty"`     // Will be replaced by Links at some point
-	Links       []MetaLinkItem `json:"links,omitempty"`    // For genres, director, cast and potentially more. Not fully supported by Stremio yet!
-	Poster      string         `json:"poster,omitempty"`   // URL
-	PosterShape string         `json:"posterShape,omitempty"`
-	Background  string         `json:"background,omitempty"` // URL
-	Logo        string         `json:"logo,omitempty"`       // URL
-	Description string         `json:"description,omitempty"`
-	ReleaseInfo string         `json:"releaseInfo,omitempty"` // E.g. "2000" for movies and "2000-2014" or "2000-" for TV shows
-	IMDbRating  string         `json:"imdbRating,omitempty"`
-	Released    string         `json:"released,omitempty"` // Must be ISO 8601, e.g. "2010-12-06T05:00:00.000Z"
-	Videos      []VideoItem    `json:"videos,omitempty"`
-	Runtime     string         `json:"runtime,omitempty"`
-	Language    string         `json:"language,omitempty"`
-	Country     string         `json:"country,omitempty"`
-	Awards      string         `json:"awards,omitempty"`
-	Website     string         `json:"website,omitempty"` // URL
+	Genres        []string          `json:"genres,omitempty"`   // Will be replaced by Links at some point
+	Director      []string          `json:"director,omitempty"` // Will be replaced by Links at some point
+	Cast          []string          `json:"cast,omitempty"`     // Will be replaced by Links at some point
+	Links         []MetaLinkItem    `json:"links,omitempty"`    // For genres, director, cast and potentially more. Not fully supported by Stremio yet!
+	Poster        string            `json:"poster,omitempty"`   // URL
+	PosterShape   string            `json:"posterShape,omitempty"`
+	Background    string            `json:"background,omitempty"` // URL
+	Logo          string            `json:"logo,omitempty"`       // URL
+	Description   string            `json:"description,omitempty"`
+	ReleaseInfo   string            `json:"releaseInfo,omitempty"` // E.g. "2000" for movies and "2000-2014" or "2000-" for TV shows
+	IMDbRating    string            `json:"imdbRating,omitempty"`
+	Released      string            `json:"released,omitempty"` // Must be ISO 8601, e.g. "2010-12-06T05:00:00.000Z"
+	Videos        []VideoItem       `json:"videos,omitempty"`
+	Runtime       string            `json:"runtime,omitempty"`
+	Language      string            `json:"language,omitempty"`
+	Country       string            `json:"country,omitempty"`
+	Awards        string            `json:"awards,omitempty"`
+	Website       string            `json:"website,omitempty"` // URL
+	BehaviorHints MetaBehaviorHints `json:"behaviorHints,omitempty"`
+}
 
-	// TODO: behaviorHints
+// MetaBehaviorHints provides additional information about the meta item
+type MetaBehaviorHints struct {
+	DefaultVideoID string `json:"defaultVideoId,omitempty"` // ID of the default video to play
+	DefaultSeason  string `json:"defaultSeason,omitempty"`  // Default season for TV shows
+	DefaultEpisode string `json:"defaultEpisode,omitempty"` // Default episode for TV shows
+	AutoPlay       bool   `json:"autoPlay,omitempty"`       // Whether to auto-play the content
+	BingeWatch     bool   `json:"bingeWatch,omitempty"`     // Whether the content supports binge watching
+	Proxy          bool   `json:"proxy,omitempty"`          // Whether the content should be proxied
 }
 
 // MetaLinkItem links to a page within Stremio.
@@ -260,9 +269,23 @@ type StreamItem struct {
 	ExternalURL string `json:"externalUrl,omitempty"` // URL
 
 	// Optional
-	Title     string `json:"title,omitempty"`   // Usually used for stream quality
-	FileIndex uint8  `json:"fileIdx,omitempty"` // Only when using InfoHash
+	Title         string              `json:"title,omitempty"`   // Usually used for stream quality
+	FileIndex     uint8               `json:"fileIdx,omitempty"` // Only when using InfoHash
+	Subtitles     []SubtitleItem      `json:"subtitles,omitempty"`
+	BehaviorHints StreamBehaviorHints `json:"behaviorHints,omitempty"`
+}
 
-	// TODO: subtitles
-	// TODO: behaviorHints
+// SubtitleItem represents a subtitle track for a stream
+type SubtitleItem struct {
+	ID       string `json:"id"`
+	URL      string `json:"url"`      // URL to the subtitle file
+	Language string `json:"language"` // ISO 639-1 language code
+	Label    string `json:"label"`    // Human readable label
+}
+
+// StreamBehaviorHints provides additional information about the stream
+type StreamBehaviorHints struct {
+	BingeWatch bool `json:"bingeWatch,omitempty"` // Whether the stream supports binge watching
+	AutoPlay   bool `json:"autoPlay,omitempty"`   // Whether the stream should auto-play
+	Proxy      bool `json:"proxy,omitempty"`      // Whether the stream should be proxied
 }

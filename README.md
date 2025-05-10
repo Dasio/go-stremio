@@ -29,7 +29,6 @@ It provides the most important parts of the Node.js SDK and depending on the req
 
 ## Features
 
-- [x] Based on the [Express](https://expressjs.com)-inspired web framework [Fiber](https://gofiber.io)
 - [x] All required *types* for building catalog and stream addons
 - [x] Graceful server shutdown
   - [x] With optional channel to be notified about the shutdown
@@ -66,7 +65,7 @@ package main
 import (
     "context"
 
-    "github.com/deflix-tv/go-stremio"
+    "github.com/dasio/go-stremio"
 )
 
 var (

@@ -4,14 +4,13 @@ import (
 	"context"
 	"embed"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"os"
 	"sync/atomic"
 
-	"github.com/gofiber/fiber/v2"
-	"go.uber.org/zap"
-
-	"github.com/deflix-tv/go-stremio"
-	"github.com/deflix-tv/go-stremio/pkg/cinemeta"
+	"github.com/Dasio/go-stremio"
+	"github.com/Dasio/go-stremio/pkg/cinemeta"
 )
 
 var (
@@ -57,6 +56,7 @@ var (
 )
 
 // content is our static web server content.
+//
 //go:embed web/index.html
 var content embed.FS
 
@@ -78,10 +78,9 @@ type customer struct {
 
 func main() {
 	// Create the logger first, so we can use it in our handlers
-	logger, err := stremio.NewLogger("debug", "")
-	if err != nil {
-		panic(err)
-	}
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
 
 	// Create movie handler that uses the logger we previously created
 	movieHandler := createMovieHandler(logger)
@@ -113,30 +112,12 @@ func main() {
 	// Create addon
 	addon, err := stremio.NewAddon(manifest, nil, streamHandlers, options)
 	if err != nil {
-		logger.Fatal("Couldn't create new addon", zap.Error(err))
+		logger.Error("Couldn't create new addon", "error", err)
+		return
 	}
 
 	// Register the user data type
 	addon.RegisterUserData(customer{})
-
-	// Add a custom middleware that blocks unauthorized requests, but only for selected endpoints.
-	// This allows requests to:
-	// - The manifest without user data (Stremio needs that)
-	// - The configure endpoint (where a user doesn't have encoded user data yet, or even with user data it doesn't matter)
-	// - The health endpoint, which our service discovery or container orchestrator might need
-	// Another reason is that adding it to "/" only would lead to the middleware not being able to read the userData URL parameter.
-	authMiddleware := createAuthMiddleware(addon, logger)
-	addon.AddMiddleware("/:userData/manifest.json", authMiddleware)
-	addon.AddMiddleware("/stream", authMiddleware)
-	addon.AddMiddleware("/:userData/stream", authMiddleware)
-	addon.AddMiddleware("/:userData/ping", authMiddleware)
-
-	// Add a custom middleware that logs which movie (name) a user is requesting
-	addon.AddMiddleware("/:userData/stream", createMetaMiddleware(logger))
-
-	// Add manifest callback that counts the number of "installations"
-	manifestCallback := createManifestCallback(logger)
-	addon.SetManifestCallback(manifestCallback)
 
 	// Add a custom endpoint that responds to requests to /ping with "pong".
 	customEndpoint := createCustomEndpoint(logger)
@@ -151,14 +132,14 @@ func main() {
 	addon.Run(stoppingChan)
 }
 
-func createMovieHandler(logger *zap.Logger) stremio.StreamHandler {
-	return func(ctx context.Context, id string, userData interface{}) ([]stremio.StreamItem, error) {
+func createMovieHandler(logger *slog.Logger) stremio.StreamHandler {
+	return func(ctx context.Context, id string, userData any) ([]stremio.StreamItem, error) {
 		// We only serve Big Buck Bunny
 		if id == "tt1254207" {
 			// No need to check if userData is nil or if the conversion worked, because our custom auth middleware did that already.
 			u, _ := userData.(*customer)
 
-			logger.Info("User requested stream", zap.String("userID", u.UserID))
+			logger.Info("User requested stream", "userID", u.UserID)
 
 			// Return different streams depending on the user's preference
 			switch u.PreferredStreamType {
@@ -176,95 +157,97 @@ func createMovieHandler(logger *zap.Logger) stremio.StreamHandler {
 
 // Custom middleware that blocks unauthorized requests.
 // Showcases the usage of user data when it's not passed from go-stremio.
-func createAuthMiddleware(addon *stremio.Addon, logger *zap.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+func createAuthMiddleware(addon *stremio.Addon, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		// We used "/:userData" when creating the auth middleware
-		userDataString := c.Params("userData", "")
+		userDataString := r.URL.Query().Get("userData")
 		if userDataString == "" {
 			logger.Info("Someone sent a request without user data")
-			return c.SendStatus(fiber.StatusUnauthorized)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
 
 		// We used "/:userData" when creating the auth middleware, so we must pass that parameter name to access the custom user data.
-		userData, err := addon.DecodeUserData("userData", c)
+		userData, err := addon.DecodeUserData("userData", r)
 		if err != nil {
-			logger.Warn("Couldn't decode user data", zap.Error(err))
-			return c.SendStatus(fiber.StatusBadRequest)
+			logger.Warn("Couldn't decode user data", "error", err)
+			http.Error(w, "Bad Request", http.StatusBadRequest)
+			return
 		}
-		u, ok := userData.(*customer)
+		u, ok := userData.(customer)
 		if !ok {
 			t := fmt.Sprintf("%T", userData)
-			logger.Error("Couldn't convert user data to customer object", zap.String("type", t))
-			return c.SendStatus(fiber.StatusInternalServerError)
+			logger.Error("Couldn't convert user data to customer object", "type", t)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
 		}
 
 		// Empty user IDs and tokens can be rejected immediately
 		if u.UserID == "" || u.Token == "" {
-			return c.SendStatus(fiber.StatusUnauthorized)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
 		}
 
 		// For others we don't want to leak whether a userID is true when a password was wrong, so either both are OK or the request is forbidden.
 		for _, allowedUser := range allowedUsers {
 			if u.UserID == allowedUser.UserID && u.Token == allowedUser.Token {
-				return c.Next()
+				return
 			}
 		}
-		return c.SendStatus(fiber.StatusForbidden)
+		http.Error(w, "Forbidden", http.StatusForbidden)
 	}
 }
 
 // Custom middleware that logs which movie (name) a user is asking for.
 // Showcases the usage of meta info in the context.
-func createMetaMiddleware(logger *zap.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		if meta, err := cinemeta.GetMetaFromContext(c.Context()); err != nil {
+func createMetaMiddleware(logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if meta, err := cinemeta.GetMetaFromContext(r.Context()); err != nil {
 			if err == cinemeta.ErrNoMeta {
 				logger.Warn("Meta not found in context")
 			} else {
-				logger.Error("Couldn't get meta from context", zap.Error(err))
+				logger.Error("Couldn't get meta from context", "error", err)
 			}
 		} else {
-			logger.Info("User is asking for stream", zap.String("movie", meta.Name))
+			logger.Info("User is asking for stream", "movie", meta.Name)
 		}
-
-		return c.Next()
 	}
 }
 
 // Manifest callback which counts the number of "installations".
 // Showcases the usage of user data passed by go-stremio.
-func createManifestCallback(logger *zap.Logger) stremio.ManifestCallback {
+func createManifestCallback(logger *slog.Logger) stremio.ManifestCallback {
 	var countNoData int64
 	var countError int64
 	var countOK int64
 
-	return func(ctx context.Context, _ *stremio.Manifest, userData interface{}) int {
+	return func(ctx context.Context, _ *stremio.Manifest, userData any) int {
 		// User provided no data
 		if userData == nil {
 			atomic.AddInt64(&countNoData, 1)
-			logger.Info("Manifest called without user data", zap.Int64("sum", atomic.LoadInt64(&countNoData)))
-			return fiber.StatusOK
+			logger.Info("Manifest called without user data", "sum", atomic.LoadInt64(&countNoData))
+			return http.StatusOK
 		}
 
 		u, ok := userData.(*customer)
 		if !ok {
 			t := fmt.Sprintf("%T", userData)
-			logger.Error("Couldn't convert user data to customer object", zap.String("type", t))
+			logger.Error("Couldn't convert user data to customer object", "type", t)
 			atomic.AddInt64(&countError, 1)
-			logger.Info("Manifest called leading to an error", zap.Int64("sum", atomic.LoadInt64(&countError)))
-			return fiber.StatusInternalServerError
+			logger.Info("Manifest called leading to an error", "sum", atomic.LoadInt64(&countError))
+			return http.StatusInternalServerError
 		}
 
 		// No need to check whether the user is allowed or not - the auth middleware already did that
 		atomic.AddInt64(&countOK, 1)
-		logger.Info("A user installed our addon", zap.Int64("sum", atomic.LoadInt64(&countOK)), zap.String("user", u.UserID))
-		return fiber.StatusOK
+		logger.Info("A user installed our addon", "sum", atomic.LoadInt64(&countOK), "user", u.UserID)
+		return http.StatusOK
 	}
 }
 
-func createCustomEndpoint(logger *zap.Logger) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+func createCustomEndpoint(logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		logger.Info("A user called the ping endpoint")
-		return c.SendString("pong")
+		w.Write([]byte("pong"))
 	}
 }
