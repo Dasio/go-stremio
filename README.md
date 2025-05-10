@@ -65,7 +65,7 @@ package main
 import (
     "context"
 
-    "github.com/dasio/go-stremio"
+    "github.com/Dasio/go-stremio"
 )
 
 var (

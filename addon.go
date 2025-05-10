@@ -58,6 +58,14 @@ type MetaFetcher interface {
 	GetTVShow(ctx context.Context, imdbID string, season int, episode int) (cinemeta.Meta, error)
 }
 
+// ConfigurationUI represents the configuration UI for the addon
+type ConfigurationUI struct {
+	Type       string         `json:"type"`               // The type of configuration UI (e.g. "form", "list", etc.)
+	Properties map[string]any `json:"properties"`         // The properties of the configuration UI
+	Required   []string       `json:"required,omitempty"` // The required fields
+	Default    any            `json:"default,omitempty"`  // The default values
+}
+
 // Addon represents a remote addon.
 // You can create one with NewAddon() and then run it with Run().
 type Addon struct {
@@ -65,6 +73,7 @@ type Addon struct {
 	catalogHandlers  map[string]CatalogHandler
 	streamHandlers   map[string]StreamHandler
 	configHandler    ConfigurationHandler
+	configUI         *ConfigurationUI
 	opts             Options
 	logger           *slog.Logger
 	customEndpoints  []customEndpoint
@@ -189,6 +198,11 @@ func (a *Addon) SetConfigurationHandler(handler ConfigurationHandler) {
 	a.configHandler = handler
 }
 
+// SetConfigurationUI sets the configuration UI for the addon
+func (a *Addon) SetConfigurationUI(ui *ConfigurationUI) {
+	a.configUI = ui
+}
+
 // Run starts the remote addon. It sets up an HTTP server that handles requests to "/manifest.json" etc. and gracefully handles shutdowns.
 // The call is *blocking*, so use the stoppingChan param if you want to be notified when the addon is about to shut down
 // because of a system signal like Ctrl+C or `docker stop`. It should be a buffered channel with a capacity of 1.
@@ -231,23 +245,33 @@ func (a *Addon) Run(stoppingChan chan bool) {
 	}
 
 	// Add configuration endpoint if enabled
-	if a.manifest.BehaviorHints.Configurable && a.configHandler != nil {
-		mux.HandleFunc("/configure", func(w http.ResponseWriter, r *http.Request) {
-			userData, err := a.DecodeUserData("userData", r)
-			if err != nil {
-				http.Error(w, "Invalid user data", http.StatusBadRequest)
-				return
-			}
+	if a.manifest.BehaviorHints.Configurable {
+		if a.configHandler != nil {
+			mux.HandleFunc("/configure", func(w http.ResponseWriter, r *http.Request) {
+				userData, err := a.DecodeUserData("userData", r)
+				if err != nil {
+					http.Error(w, "Invalid user data", http.StatusBadRequest)
+					return
+				}
 
-			config, err := a.configHandler(r.Context(), userData)
-			if err != nil {
-				http.Error(w, "Failed to get configuration", http.StatusInternalServerError)
-				return
-			}
+				config, err := a.configHandler(r.Context(), userData)
+				if err != nil {
+					http.Error(w, "Failed to get configuration", http.StatusInternalServerError)
+					return
+				}
 
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(config)
-		})
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(config)
+			})
+		}
+
+		// Add configuration UI endpoint if set
+		if a.configUI != nil {
+			mux.HandleFunc("/configure.json", func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(a.configUI)
+			})
+		}
 	}
 
 	// Add root redirect if configured

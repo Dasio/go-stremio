@@ -187,13 +187,20 @@ type MetaPreviewItem struct {
 	PosterShape string `json:"posterShape,omitempty"`
 
 	// Optional, used for the "Discover" page sidebar
-	Genres      []string       `json:"genres,omitempty"`   // Will be replaced by Links at some point
-	Director    []string       `json:"director,omitempty"` // Will be replaced by Links at some point
-	Cast        []string       `json:"cast,omitempty"`     // Will be replaced by Links at some point
-	Links       []MetaLinkItem `json:"links,omitempty"`    // For genres, director, cast and potentially more. Not fully supported by Stremio yet!
-	IMDbRating  string         `json:"imdbRating,omitempty"`
-	ReleaseInfo string         `json:"releaseInfo,omitempty"` // E.g. "2000" for movies and "2000-2014" or "2000-" for TV shows
-	Description string         `json:"description,omitempty"`
+	Genres        []string          `json:"genres,omitempty"`   // Will be replaced by Links at some point
+	Director      []string          `json:"director,omitempty"` // Will be replaced by Links at some point
+	Cast          []string          `json:"cast,omitempty"`     // Will be replaced by Links at some point
+	Links         []MetaLinkItem    `json:"links,omitempty"`    // For genres, director, cast and potentially more
+	IMDbRating    string            `json:"imdbRating,omitempty"`
+	ReleaseInfo   string            `json:"releaseInfo,omitempty"` // E.g. "2000" for movies and "2000-2014" or "2000-" for TV shows
+	Description   string            `json:"description,omitempty"`
+	Released      string            `json:"released,omitempty"` // Must be ISO 8601, e.g. "2010-12-06T05:00:00.000Z"
+	Runtime       string            `json:"runtime,omitempty"`
+	Language      string            `json:"language,omitempty"`
+	Country       string            `json:"country,omitempty"`
+	Awards        string            `json:"awards,omitempty"`
+	Website       string            `json:"website,omitempty"` // URL
+	BehaviorHints MetaBehaviorHints `json:"behaviorHints,omitempty"`
 }
 
 // MetaItem represents a meta item and is meant to be used when info for a specific item was requested.
@@ -204,25 +211,48 @@ type MetaItem struct {
 	Name string `json:"name"`
 
 	// Optional
-	Genres        []string          `json:"genres,omitempty"`   // Will be replaced by Links at some point
-	Director      []string          `json:"director,omitempty"` // Will be replaced by Links at some point
-	Cast          []string          `json:"cast,omitempty"`     // Will be replaced by Links at some point
-	Links         []MetaLinkItem    `json:"links,omitempty"`    // For genres, director, cast and potentially more. Not fully supported by Stremio yet!
-	Poster        string            `json:"poster,omitempty"`   // URL
-	PosterShape   string            `json:"posterShape,omitempty"`
-	Background    string            `json:"background,omitempty"` // URL
-	Logo          string            `json:"logo,omitempty"`       // URL
-	Description   string            `json:"description,omitempty"`
-	ReleaseInfo   string            `json:"releaseInfo,omitempty"` // E.g. "2000" for movies and "2000-2014" or "2000-" for TV shows
-	IMDbRating    string            `json:"imdbRating,omitempty"`
-	Released      string            `json:"released,omitempty"` // Must be ISO 8601, e.g. "2010-12-06T05:00:00.000Z"
-	Videos        []VideoItem       `json:"videos,omitempty"`
-	Runtime       string            `json:"runtime,omitempty"`
-	Language      string            `json:"language,omitempty"`
-	Country       string            `json:"country,omitempty"`
-	Awards        string            `json:"awards,omitempty"`
-	Website       string            `json:"website,omitempty"` // URL
-	BehaviorHints MetaBehaviorHints `json:"behaviorHints,omitempty"`
+	Genres           []string          `json:"genres,omitempty"`   // Will be replaced by Links at some point
+	Director         []string          `json:"director,omitempty"` // Will be replaced by Links at some point
+	Cast             []string          `json:"cast,omitempty"`     // Will be replaced by Links at some point
+	Links            []MetaLinkItem    `json:"links,omitempty"`    // For genres, director, cast and potentially more
+	Poster           string            `json:"poster,omitempty"`   // URL
+	PosterShape      string            `json:"posterShape,omitempty"`
+	Background       string            `json:"background,omitempty"` // URL
+	Logo             string            `json:"logo,omitempty"`       // URL
+	Description      string            `json:"description,omitempty"`
+	ReleaseInfo      string            `json:"releaseInfo,omitempty"` // E.g. "2000" for movies and "2000-2014" or "2000-" for TV shows
+	IMDbRating       string            `json:"imdbRating,omitempty"`
+	Released         string            `json:"released,omitempty"` // Must be ISO 8601, e.g. "2010-12-06T05:00:00.000Z"
+	Videos           []VideoItem       `json:"videos,omitempty"`
+	Runtime          string            `json:"runtime,omitempty"`
+	Language         string            `json:"language,omitempty"`
+	Country          string            `json:"country,omitempty"`
+	Awards           string            `json:"awards,omitempty"`
+	Website          string            `json:"website,omitempty"` // URL
+	BehaviorHints    MetaBehaviorHints `json:"behaviorHints,omitempty"`
+	Popularity       float64           `json:"popularity,omitempty"`
+	VoteAverage      float64           `json:"voteAverage,omitempty"`
+	VoteCount        int               `json:"voteCount,omitempty"`
+	Status           string            `json:"status,omitempty"`           // For TV shows: "Returning Series", "Ended", etc.
+	Network          string            `json:"network,omitempty"`          // For TV shows
+	EpisodeRunTime   []int             `json:"episodeRunTime,omitempty"`   // For TV shows
+	InProduction     bool              `json:"inProduction,omitempty"`     // For TV shows
+	LastAirDate      string            `json:"lastAirDate,omitempty"`      // For TV shows
+	NumberOfSeasons  int               `json:"numberOfSeasons,omitempty"`  // For TV shows
+	NumberOfEpisodes int               `json:"numberOfEpisodes,omitempty"` // For TV shows
+	CreatedBy        []string          `json:"createdBy,omitempty"`        // For TV shows
+	Seasons          []SeasonItem      `json:"seasons,omitempty"`          // For TV shows
+}
+
+// SeasonItem represents a season in a TV show
+type SeasonItem struct {
+	ID           string `json:"id"`
+	Season       int    `json:"season"`
+	Name         string `json:"name"`
+	Overview     string `json:"overview,omitempty"`
+	Poster       string `json:"poster,omitempty"`  // URL
+	AirDate      string `json:"airDate,omitempty"` // Must be ISO 8601
+	EpisodeCount int    `json:"episodeCount,omitempty"`
 }
 
 // MetaBehaviorHints provides additional information about the meta item

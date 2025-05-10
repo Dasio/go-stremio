@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -165,6 +166,10 @@ func createStreamHandler(handlers map[string]StreamHandler, cacheAge int, cacheP
 		// Call handler
 		items, err := handler(r.Context(), id, decodedUserData)
 		if err != nil {
+			if errors.Is(err, NotFound) {
+				http.Error(w, "Not found", http.StatusNotFound)
+				return
+			}
 			logger.Error("Stream handler returned error", "error", err)
 			http.Error(w, "Failed to get streams", http.StatusInternalServerError)
 			return
@@ -188,9 +193,9 @@ func createStreamHandler(handlers map[string]StreamHandler, cacheAge int, cacheP
 			}
 		}
 
-		// Return items
+		// Return items as {"streams": items}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(items)
+		json.NewEncoder(w).Encode(map[string]any{"streams": items})
 	}
 }
 
@@ -204,6 +209,11 @@ func createRootHandler(redirectURL string, logger *slog.Logger) http.HandlerFunc
 
 func decodeUserData(data string, t reflect.Type, logger *slog.Logger, userDataIsBase64 bool) (any, error) {
 	logger.Info("Decoding user data", "userData", data)
+
+	if t == nil {
+		// No user data type registered, return empty string (as per SDK docs)
+		return "", nil
+	}
 
 	var userDataDecoded []byte
 	var err error
