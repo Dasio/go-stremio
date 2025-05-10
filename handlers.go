@@ -39,7 +39,7 @@ func generateETag(data any) string {
 func createManifestHandler(manifest Manifest, logger *slog.Logger, callback ManifestCallback, userDataType reflect.Type, userDataIsBase64 bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Get user data from URL
-		userData := r.URL.Query().Get("userData")
+		userData := r.PathValue("userData")
 		if userData == "" {
 			userData = r.URL.Query().Get("userData")
 		}
@@ -70,16 +70,18 @@ func createManifestHandler(manifest Manifest, logger *slog.Logger, callback Mani
 // createCatalogHandler creates a handler for catalog requests.
 func createCatalogHandler(handlers map[string]CatalogHandler, cacheAge int, cachePublic bool, handleEtag bool, logger *slog.Logger, userDataType reflect.Type, userDataIsBase64 bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Get type and ID from URL
-		typeStr := r.URL.Query().Get("type")
-		id := r.URL.Query().Get("id")
+		// Get type and ID from path parameters
+		typeStr := r.PathValue("type")
+		id := r.PathValue("id")
 		if typeStr == "" || id == "" {
 			http.Error(w, "Missing type or id parameter", http.StatusBadRequest)
 			return
 		}
+		// Strip .json extension from id
+		id = strings.TrimSuffix(id, ".json")
 
 		// Get user data from URL
-		userData := r.URL.Query().Get("userData")
+		userData := r.PathValue("userData")
 		if userData == "" {
 			userData = r.URL.Query().Get("userData")
 		}
@@ -133,17 +135,18 @@ func createCatalogHandler(handlers map[string]CatalogHandler, cacheAge int, cach
 
 // createStreamHandler creates a handler for stream requests.
 func createStreamHandler(handlers map[string]StreamHandler, cacheAge int, cachePublic bool, handleEtag bool, logger *slog.Logger, userDataType reflect.Type, userDataIsBase64 bool) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Get type and ID from URL
-		typeStr := r.URL.Query().Get("type")
-		id := r.URL.Query().Get("id")
+	return func(w http.ResponseWriter, r *http.Request) { // Get type and ID from path parameters
+		typeStr := r.PathValue("type")
+		id := r.PathValue("id")
 		if typeStr == "" || id == "" {
 			http.Error(w, "Missing type or id parameter", http.StatusBadRequest)
 			return
 		}
+		// Strip .json extension from id
+		id = strings.TrimSuffix(id, ".json")
 
 		// Get user data from URL
-		userData := r.URL.Query().Get("userData")
+		userData := r.PathValue("userData")
 		if userData == "" {
 			userData = r.URL.Query().Get("userData")
 		}
@@ -166,7 +169,7 @@ func createStreamHandler(handlers map[string]StreamHandler, cacheAge int, cacheP
 		// Call handler
 		items, err := handler(r.Context(), id, decodedUserData)
 		if err != nil {
-			if errors.Is(err, NotFound) {
+			if errors.Is(err, ErrNotFound) {
 				http.Error(w, "Not found", http.StatusNotFound)
 				return
 			}
@@ -245,13 +248,15 @@ func decodeUserData(data string, t reflect.Type, logger *slog.Logger, userDataIs
 func createMetaMiddleware(metaClient MetaFetcher, putMetaInContext bool, logMediaName bool, logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Get type and ID from URL
-			typeStr := r.URL.Query().Get("type")
-			id := r.URL.Query().Get("id")
+			// Get type and ID from path parameters
+			typeStr := r.PathValue("type")
+			id := r.PathValue("id")
 			if typeStr == "" || id == "" {
 				http.Error(w, "Missing type or id parameter", http.StatusBadRequest)
 				return
 			}
+			// Strip .json extension from id
+			id = strings.TrimSuffix(id, ".json")
 
 			// Get meta information
 			var meta cinemeta.Meta
@@ -311,7 +316,10 @@ func addRouteMatcherMiddleware(mux *http.ServeMux, configurationRequired bool, s
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Check if configuration is required
 		if configurationRequired {
-			userData := r.URL.Query().Get("userData")
+			userData := r.PathValue("userData")
+			if userData == "" {
+				userData = r.URL.Query().Get("userData")
+			}
 			if userData == "" {
 				http.Error(w, "Configuration required", http.StatusBadRequest)
 				return
@@ -320,7 +328,10 @@ func addRouteMatcherMiddleware(mux *http.ServeMux, configurationRequired bool, s
 
 		// Check if stream ID matches regex
 		if streamIDregex != nil {
-			id := r.URL.Query().Get("id")
+			id := r.PathValue("id")
+			if id == "" {
+				id = r.URL.Query().Get("id")
+			}
 			if id != "" && !streamIDregex.MatchString(id) {
 				http.Error(w, "Invalid stream ID", http.StatusBadRequest)
 				return

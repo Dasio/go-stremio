@@ -54,7 +54,7 @@ type Options struct {
 // DefaultOptions contains the default values for Options.
 var DefaultOptions = Options{
 	BindAddr:     "0.0.0.0",
-	Port:         7000,
+	Port:         8080,
 	LoggingLevel: "info",
 	LogEncoding:  "console",
 }

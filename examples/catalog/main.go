@@ -56,7 +56,7 @@ func main() {
 
 func movieHandler(ctx context.Context, id string, userData any) ([]stremio.MetaPreviewItem, error) {
 	if id != "blender" {
-		return nil, stremio.NotFound
+		return nil, stremio.ErrNotFound
 	}
 	return []stremio.MetaPreviewItem{
 		{

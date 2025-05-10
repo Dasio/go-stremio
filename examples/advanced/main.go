@@ -151,7 +151,7 @@ func createMovieHandler(logger *slog.Logger) stremio.StreamHandler {
 				return streams, nil
 			}
 		}
-		return nil, stremio.NotFound
+		return nil, stremio.ErrNotFound
 	}
 }
 

@@ -302,7 +302,7 @@ type StreamItem struct {
 	Title         string              `json:"title,omitempty"`   // Usually used for stream quality
 	FileIndex     uint8               `json:"fileIdx,omitempty"` // Only when using InfoHash
 	Subtitles     []SubtitleItem      `json:"subtitles,omitempty"`
-	BehaviorHints StreamBehaviorHints `json:"behaviorHints,omitempty"`
+	BehaviorHints StreamBehaviorHints `json:"behaviorHints,omitzero"`
 }
 
 // SubtitleItem represents a subtitle track for a stream

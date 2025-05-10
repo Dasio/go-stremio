@@ -87,29 +87,29 @@ type Addon struct {
 func NewAddon(manifest Manifest, catalogHandlers map[string]CatalogHandler, streamHandlers map[string]StreamHandler, opts Options) (*Addon, error) {
 	// Precondition checks
 	if manifest.ID == "" || manifest.Name == "" || manifest.Description == "" || manifest.Version == "" {
-		return nil, errors.New("An empty manifest was passed")
+		return nil, errors.New("an empty manifest was passed")
 	} else if catalogHandlers == nil && streamHandlers == nil {
-		return nil, errors.New("No handler was passed")
+		return nil, errors.New("no handlers were passed")
 	} else if (opts.CachePublicCatalogs && opts.CacheAgeCatalogs == 0) ||
 		(opts.CachePublicStreams && opts.CacheAgeStreams == 0) {
-		return nil, errors.New("Enabling public caching only makes sense when also setting a cache age")
+		return nil, errors.New("enabling public caching only makes sense when also setting a cache age")
 	} else if (opts.HandleEtagCatalogs && opts.CacheAgeCatalogs == 0) ||
 		(opts.HandleEtagStreams && opts.CacheAgeStreams == 0) {
-		return nil, errors.New("ETag handling only makes sense when also setting a cache age")
+		return nil, errors.New("etag handling only makes sense when also setting a cache age")
 	} else if opts.DisableRequestLogging && (opts.LogIPs || opts.LogUserAgent) {
-		return nil, errors.New("Enabling IP or user agent logging doesn't make sense when disabling request logging")
+		return nil, errors.New("enabling IP or user agent logging doesn't make sense when disabling request logging")
 	} else if opts.Logger != nil && opts.LoggingLevel != "" {
-		return nil, errors.New("Setting a logging level in the options doesn't make sense when you already set a custom logger")
+		return nil, errors.New("setting a logging level in the options doesn't make sense when you already set a custom logger")
 	} else if opts.DisableRequestLogging && opts.LogMediaName {
-		return nil, errors.New("Enabling media name logging doesn't make sense when disabling request logging")
+		return nil, errors.New("enabling media name logging doesn't make sense when disabling request logging")
 	} else if opts.MetaClient != nil && !opts.LogMediaName && !opts.PutMetaInContext {
-		return nil, errors.New("Setting a meta client when neither logging the media name nor putting it in the context doesn't make sense")
+		return nil, errors.New("setting a meta client when neither logging the media name nor putting it in the context doesn't make sense")
 	} else if opts.MetaClient != nil && opts.CinemetaTimeout != 0 {
-		return nil, errors.New("Setting a Cinemeta timeout doesn't make sense when you already set a meta client")
+		return nil, errors.New("setting a Cinemeta timeout doesn't make sense when you already set a meta client")
 	} else if manifest.BehaviorHints.ConfigurationRequired && !manifest.BehaviorHints.Configurable {
-		return nil, errors.New("Requiring a configuration only makes sense when also making the addon configurable")
+		return nil, errors.New("requiring a configuration only makes sense when also making the addon configurable")
 	} else if opts.ConfigureHTMLfs != nil && !manifest.BehaviorHints.Configurable {
-		return nil, errors.New("Setting a ConfigureHTMLfs only makes sense when also making the addon configurable")
+		return nil, errors.New("setting a ConfigureHTMLfs only makes sense when also making the addon configurable")
 	}
 
 	// Set default values
@@ -230,18 +230,26 @@ func (a *Addon) Run(stoppingChan chan bool) {
 	if a.catalogHandlers != nil {
 		catalogHandler := createCatalogHandler(a.catalogHandlers, int(a.opts.CacheAgeCatalogs.Seconds()), a.opts.CachePublicCatalogs, a.opts.HandleEtagCatalogs, logger, a.userDataType, a.opts.UserDataIsBase64)
 		if !a.manifest.BehaviorHints.ConfigurationRequired {
-			mux.HandleFunc("/catalog/{type}/{id}.json", catalogHandler)
+			mux.HandleFunc("/catalog/{type}/{id}", catalogHandler)
 		}
-		mux.HandleFunc("/{userData}/catalog/{type}/{id}.json", catalogHandler)
+		mux.HandleFunc("/{userData}/catalog/{type}/{id}", catalogHandler)
 	}
 
 	// Add stream endpoint if handlers are set
 	if a.streamHandlers != nil {
 		streamHandler := createStreamHandler(a.streamHandlers, int(a.opts.CacheAgeStreams.Seconds()), a.opts.CachePublicStreams, a.opts.HandleEtagStreams, logger, a.userDataType, a.opts.UserDataIsBase64)
 		if !a.manifest.BehaviorHints.ConfigurationRequired {
-			mux.HandleFunc("/stream/{type}/{id}.json", streamHandler)
+			if a.metaClient != nil {
+				mux.Handle("/stream/{type}/{id}", createMetaMiddleware(a.metaClient, a.opts.PutMetaInContext, a.opts.LogMediaName, logger)(streamHandler))
+			} else {
+				mux.HandleFunc("/stream/{type}/{id}", streamHandler)
+			}
 		}
-		mux.HandleFunc("/{userData}/stream/{type}/{id}.json", streamHandler)
+		if a.metaClient != nil {
+			mux.Handle("/{userData}/stream/{type}/{id}", createMetaMiddleware(a.metaClient, a.opts.PutMetaInContext, a.opts.LogMediaName, logger)(streamHandler))
+		} else {
+			mux.HandleFunc("/{userData}/stream/{type}/{id}", streamHandler)
+		}
 	}
 
 	// Add configuration endpoint if enabled
@@ -295,21 +303,6 @@ func (a *Addon) Run(stoppingChan chan bool) {
 		}
 	}
 	addRouteMatcherMiddleware(mux, a.manifest.BehaviorHints.ConfigurationRequired, streamIDRegex, logger)
-
-	// Add meta middleware if enabled
-	if a.metaClient != nil {
-		metaMw := createMetaMiddleware(a.metaClient, a.opts.PutMetaInContext, a.opts.LogMediaName, logger)
-		if !a.manifest.BehaviorHints.ConfigurationRequired {
-			mux.Handle("/stream/{type}/{id}.json", metaMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				// This will be handled by the stream handler
-				http.NotFound(w, r)
-			})))
-		}
-		mux.Handle("/{userData}/stream/{type}/{id}.json", metaMw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// This will be handled by the stream handler
-			http.NotFound(w, r)
-		})))
-	}
 
 	// Create server
 	server := &http.Server{

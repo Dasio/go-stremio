@@ -38,7 +38,7 @@ func TestBasicAddon(t *testing.T) {
 					},
 				}, nil
 			}
-			return nil, NotFound
+			return nil, ErrNotFound
 		},
 	}
 
@@ -49,7 +49,7 @@ func TestBasicAddon(t *testing.T) {
 	// Create a test server with the addon's handlers
 	mux := http.NewServeMux()
 	mux.HandleFunc("/manifest.json", createManifestHandler(manifest, addon.logger, addon.manifestCallback, addon.userDataType, addon.opts.UserDataIsBase64))
-	mux.HandleFunc("/stream", createStreamHandler(streamHandlers, int(addon.opts.CacheAgeStreams.Seconds()), addon.opts.CachePublicStreams, addon.opts.HandleEtagStreams, addon.logger, addon.userDataType, addon.opts.UserDataIsBase64))
+	mux.HandleFunc("/stream/{type}/{id}", createStreamHandler(streamHandlers, int(addon.opts.CacheAgeStreams.Seconds()), addon.opts.CachePublicStreams, addon.opts.HandleEtagStreams, addon.logger, addon.userDataType, addon.opts.UserDataIsBase64))
 
 	server := httptest.NewServer(mux)
 	defer server.Close()
@@ -68,7 +68,7 @@ func TestBasicAddon(t *testing.T) {
 
 	// Test stream endpoint for Big Buck Bunny
 	t.Run("stream", func(t *testing.T) {
-		resp, err := http.Get(server.URL + "/stream?type=movie&id=tt1254207")
+		resp, err := http.Get(server.URL + "/stream/movie/tt1254207")
 		require.NoError(t, err)
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -84,7 +84,7 @@ func TestBasicAddon(t *testing.T) {
 
 	// Test stream endpoint for non-existent movie
 	t.Run("stream not found", func(t *testing.T) {
-		resp, err := http.Get(server.URL + "/stream?type=movie&id=tt0000000")
+		resp, err := http.Get(server.URL + "/stream/movie/tt0000000")
 		require.NoError(t, err)
 		require.Equal(t, http.StatusNotFound, resp.StatusCode)
 	})
