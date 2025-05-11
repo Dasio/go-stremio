@@ -129,9 +129,11 @@ func createCatalogHandler(handlers map[string]CatalogHandler, cacheAge int, cach
 
 		// Return items
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(items)
+		json.NewEncoder(w).Encode(map[string]any{"metas": items})
 	}
 }
+
+// create object fromt his
 
 // createStreamHandler creates a handler for stream requests.
 func createStreamHandler(handlers map[string]StreamHandler, cacheAge int, cachePublic bool, handleEtag bool, logger *slog.Logger, userDataType reflect.Type, userDataIsBase64 bool) http.HandlerFunc {
@@ -211,7 +213,10 @@ func createRootHandler(redirectURL string, logger *slog.Logger) http.HandlerFunc
 }
 
 func decodeUserData(data string, t reflect.Type, logger *slog.Logger, userDataIsBase64 bool) (any, error) {
-	logger.Info("Decoding user data", "userData", data)
+	if data == "" {
+		// No user data provided, return empty string (as per SDK docs)
+		return "", nil
+	}
 
 	if t == nil {
 		// No user data type registered, return empty string (as per SDK docs)
@@ -312,33 +317,40 @@ func createMetaMiddleware(metaClient MetaFetcher, putMetaInContext bool, logMedi
 
 // addRouteMatcherMiddleware adds a middleware that matches routes and puts request info in the context.
 func addRouteMatcherMiddleware(mux *http.ServeMux, configurationRequired bool, streamIDregex *regexp.Regexp, logger *slog.Logger) {
-	// Add middleware to all routes
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Check if configuration is required
-		if configurationRequired {
-			userData := r.PathValue("userData")
-			if userData == "" {
-				userData = r.URL.Query().Get("userData")
+	// Create a middleware handler
+	middleware := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Check if configuration is required
+			if configurationRequired {
+				userData := r.PathValue("userData")
+				if userData == "" {
+					userData = r.URL.Query().Get("userData")
+				}
+				if userData == "" {
+					http.Error(w, "Configuration required", http.StatusBadRequest)
+					return
+				}
 			}
-			if userData == "" {
-				http.Error(w, "Configuration required", http.StatusBadRequest)
-				return
-			}
-		}
 
-		// Check if stream ID matches regex
-		if streamIDregex != nil {
-			id := r.PathValue("id")
-			if id == "" {
-				id = r.URL.Query().Get("id")
+			// Check if stream ID matches regex
+			if streamIDregex != nil {
+				id := r.PathValue("id")
+				if id == "" {
+					id = r.URL.Query().Get("id")
+				}
+				if id != "" && !streamIDregex.MatchString(id) {
+					http.Error(w, "Invalid stream ID", http.StatusBadRequest)
+					return
+				}
 			}
-			if id != "" && !streamIDregex.MatchString(id) {
-				http.Error(w, "Invalid stream ID", http.StatusBadRequest)
-				return
-			}
-		}
 
-		// Call next handler
-		mux.ServeHTTP(w, r)
-	})
+			// Call the next handler
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	// Wrap the mux with the middleware
+	originalMux := mux
+	mux = http.NewServeMux()
+	mux.Handle("/", middleware(originalMux))
 }

@@ -200,7 +200,7 @@ type MetaPreviewItem struct {
 	Country       string            `json:"country,omitempty"`
 	Awards        string            `json:"awards,omitempty"`
 	Website       string            `json:"website,omitempty"` // URL
-	BehaviorHints MetaBehaviorHints `json:"behaviorHints,omitempty"`
+	BehaviorHints MetaBehaviorHints `json:"behaviorHints,omitzero"`
 }
 
 // MetaItem represents a meta item and is meant to be used when info for a specific item was requested.
@@ -293,16 +293,33 @@ type VideoItem struct {
 // See https://github.com/Stremio/stremio-addon-sdk/blob/f6f1f2a8b627b9d4f2c62b003b251d98adadbebe/docs/api/responses/stream.md
 type StreamItem struct {
 	// One of the following is required
-	URL         string `json:"url,omitempty"` // URL
-	YoutubeID   string `json:"ytId,omitempty"`
-	InfoHash    string `json:"infoHash,omitempty"`
-	ExternalURL string `json:"externalUrl,omitempty"` // URL
+	URL         string `json:"url,omitempty"`         // Direct URL to a video stream - must be an MP4 through https; others supported (other video formats over http/rtmp supported if notWebReady is set)
+	YoutubeID   string `json:"ytId,omitempty"`        // YouTube video ID, plays using the built-in YouTube player
+	InfoHash    string `json:"infoHash,omitempty"`    // Info hash of a torrent file
+	ExternalURL string `json:"externalUrl,omitempty"` // Meta Link or an external URL to the video, which should be opened in a browser
 
 	// Optional
-	Title         string              `json:"title,omitempty"`   // Usually used for stream quality
-	FileIndex     uint8               `json:"fileIdx,omitempty"` // Only when using InfoHash
-	Subtitles     []SubtitleItem      `json:"subtitles,omitempty"`
+	Name          string              `json:"name,omitempty"`        // Name of the stream; usually used for stream quality
+	Title         string              `json:"title,omitempty"`       // Description of the stream (warning: will soon be deprecated in favor of description)
+	Description   string              `json:"description,omitempty"` // Description of the stream (previously stream.title)
+	FileIndex     uint8               `json:"fileIdx,omitempty"`     // Index of the video file within the torrent (from infoHash); if not specified, the largest file will be selected
+	Subtitles     []SubtitleItem      `json:"subtitles,omitempty"`   // Array of Subtitle objects representing subtitles for this stream
+	Sources       []string            `json:"sources,omitempty"`     // Array of strings representing torrent tracker URLs and DHT network nodes
 	BehaviorHints StreamBehaviorHints `json:"behaviorHints,omitzero"`
+}
+
+// StreamBehaviorHints provides additional information about the stream
+type StreamBehaviorHints struct {
+	CountryWhitelist []string       `json:"countryWhitelist,omitempty"` // Array of ISO 3166-1 alpha-3 country codes in lowercase in which the stream is accessible
+	NotWebReady      bool           `json:"notWebReady,omitempty"`      // Set to true if the URL does not support https or is not an MP4 file
+	BingeGroup       string         `json:"bingeGroup,omitempty"`       // Identifies the stream's nature within the addon for binge watching
+	ProxyHeaders     map[string]any `json:"proxyHeaders,omitempty"`     // Headers that should be used for the stream
+	VideoHash        string         `json:"videoHash,omitempty"`        // Calculated OpenSubtitles hash of the video
+	VideoSize        int64          `json:"videoSize,omitempty"`        // Size of the video file in bytes
+	Filename         string         `json:"filename,omitempty"`         // Filename of the video file
+	BingeWatch       bool           `json:"bingeWatch,omitempty"`       // Whether the stream supports binge watching
+	AutoPlay         bool           `json:"autoPlay,omitempty"`         // Whether the stream should auto-play
+	Proxy            bool           `json:"proxy,omitempty"`            // Whether the stream should be proxied
 }
 
 // SubtitleItem represents a subtitle track for a stream
@@ -311,11 +328,4 @@ type SubtitleItem struct {
 	URL      string `json:"url"`      // URL to the subtitle file
 	Language string `json:"language"` // ISO 639-1 language code
 	Label    string `json:"label"`    // Human readable label
-}
-
-// StreamBehaviorHints provides additional information about the stream
-type StreamBehaviorHints struct {
-	BingeWatch bool `json:"bingeWatch,omitempty"` // Whether the stream supports binge watching
-	AutoPlay   bool `json:"autoPlay,omitempty"`   // Whether the stream should auto-play
-	Proxy      bool `json:"proxy,omitempty"`      // Whether the stream should be proxied
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Dasio/go-stremio/pkg/cinemeta"
+	"github.com/rs/cors"
 )
 
 // ManifestCallback is the callback for manifest requests, so mostly addon installations.
@@ -304,10 +305,22 @@ func (a *Addon) Run(stoppingChan chan bool) {
 	}
 	addRouteMatcherMiddleware(mux, a.manifest.BehaviorHints.ConfigurationRequired, streamIDRegex, logger)
 
-	// Create server
+	// Create server with CORS middleware
+	corsHandler := cors.New(cors.Options{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"GET", "POST", "OPTIONS"},
+		AllowedHeaders: []string{"Accept", "Content-Type", "X-Requested-With"},
+	}).Handler(mux)
+
+	// Add logging middleware if not disabled
+	var handler http.Handler = corsHandler
+	if !a.opts.DisableRequestLogging {
+		handler = createSlogLoggingMiddleware(a.logger, a.opts.LogIPs, a.opts.LogUserAgent, a.opts.LogMediaName, a.manifest.BehaviorHints.ConfigurationRequired)(handler)
+	}
+
 	server := &http.Server{
 		Addr:    a.opts.BindAddr + ":" + strconv.Itoa(a.opts.Port),
-		Handler: mux,
+		Handler: handler,
 	}
 
 	// Start server

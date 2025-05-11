@@ -6,6 +6,7 @@ require github.com/stretchr/testify v1.10.0
 
 require (
 	github.com/kr/pretty v0.1.0 // indirect
+	github.com/rs/cors v1.11.1 // indirect
 	github.com/valyala/fastrand v1.1.0 // indirect
 	github.com/valyala/histogram v1.2.0 // indirect
 	golang.org/x/sys v0.15.0 // indirect
